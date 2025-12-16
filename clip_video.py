@@ -80,14 +80,21 @@ class RegionSelector:
 
         print("\n--- 範囲選択 ---")
         print("マウスドラッグで矩形範囲を選択してください")
-        print("Enter: 確定 / Esc: やり直し / q: 終了")
+        print("Enter または Space: 確定 / Esc: やり直し / q: 終了")
         print("-" * 20)
 
         while True:
             cv2.imshow(self.window_name, self.image)
-            key = cv2.waitKey(1) & 0xFF
+            # macOSでの入力メソッド問題を回避するため、より長いwait時間を使用
+            key = cv2.waitKey(50) & 0xFF
 
-            if key == 13:  # Enter
+            # キー入力がない場合はスキップ
+            if key == 255:
+                continue
+
+            # Enter (13), LF (10), またはSpace (32) で確定
+            # macOSの日本語入力などでEnterが検出されにくい場合があるためSpaceも対応
+            if key in (13, 10, 32):
                 if self.region_selected:
                     region = self.get_region()
                     if region:
