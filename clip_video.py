@@ -8,12 +8,18 @@
 import os
 import sys
 import glob
+import shutil
 import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import cv2
 import numpy as np
 from tqdm import tqdm
+
+
+def check_ffmpeg() -> bool:
+    """ffmpegがインストールされているか確認"""
+    return shutil.which('ffmpeg') is not None
 
 
 class RegionSelector:
@@ -153,9 +159,9 @@ def get_mp4_files(folder: str) -> list:
     return sorted(mp4_files)
 
 
-def clip_video(input_path: str, output_path: str, region: tuple) -> bool:
+def clip_video_ffmpeg(input_path: str, output_path: str, region: tuple) -> bool:
     """
-    動画をクリッピング
+    ffmpegを使って動画をクリッピング
 
     Args:
         input_path: 入力動画ファイルパス
@@ -194,11 +200,102 @@ def clip_video(input_path: str, output_path: str, region: tuple) -> bool:
         return False
 
 
+def clip_video_opencv(input_path: str, output_path: str, region: tuple) -> bool:
+    """
+    OpenCVを使って動画をクリッピング（ffmpegがない場合のフォールバック）
+    注意: 音声は保持されません
+
+    Args:
+        input_path: 入力動画ファイルパス
+        output_path: 出力動画ファイルパス
+        region: (x, y, width, height)
+
+    Returns:
+        成功したかどうか
+    """
+    x, y, width, height = region
+
+    try:
+        cap = cv2.VideoCapture(input_path)
+        if not cap.isOpened():
+            print(f"エラー: 動画ファイルを開けませんでした: {input_path}")
+            return False
+
+        # 動画のプロパティを取得
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # VideoWriterを作成（mp4v コーデック）
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+        if not out.isOpened():
+            print(f"エラー: 出力ファイルを作成できませんでした: {output_path}")
+            cap.release()
+            return False
+
+        frame_count = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # 領域をクロップ
+            cropped = frame[y:y+height, x:x+width]
+            out.write(cropped)
+            frame_count += 1
+
+        cap.release()
+        out.release()
+
+        return frame_count > 0
+
+    except Exception as e:
+        print(f"エラー: {e}")
+        return False
+
+
+def clip_video(input_path: str, output_path: str, region: tuple, use_opencv: bool = False) -> bool:
+    """
+    動画をクリッピング
+
+    Args:
+        input_path: 入力動画ファイルパス
+        output_path: 出力動画ファイルパス
+        region: (x, y, width, height)
+        use_opencv: OpenCVを使用するかどうか
+
+    Returns:
+        成功したかどうか
+    """
+    if use_opencv:
+        return clip_video_opencv(input_path, output_path, region)
+    else:
+        return clip_video_ffmpeg(input_path, output_path, region)
+
+
 def main():
     """メイン処理"""
     print("=" * 50)
     print("動画クリッピングツール")
     print("=" * 50)
+
+    # ffmpegの確認
+    use_opencv = False
+    if not check_ffmpeg():
+        print("\n警告: ffmpegがインストールされていません。")
+        print("代わりにOpenCVを使用して処理できますが、音声は保持されません。")
+        print("\nffmpegをインストールするには:")
+        print("  Ubuntu/Debian: sudo apt install ffmpeg")
+        print("  macOS:         brew install ffmpeg")
+        print("  Windows:       https://ffmpeg.org/download.html からダウンロード")
+        print("\nOpenCVで処理を続行しますか？ (y/n): ", end="")
+        choice = input().strip().lower()
+        if choice != 'y':
+            print("終了します。ffmpegをインストールしてから再度実行してください。")
+            sys.exit(1)
+        use_opencv = True
+        print("\nOpenCVモードで処理します（音声なし）。")
 
     # 入力フォルダ選択
     print("\n入力フォルダを選択してください...")
@@ -261,7 +358,7 @@ def main():
 
         tqdm.write(f"処理中: {filename}")
 
-        if clip_video(mp4_file, output_path, region):
+        if clip_video(mp4_file, output_path, region, use_opencv):
             success_count += 1
         else:
             error_files.append(filename)
