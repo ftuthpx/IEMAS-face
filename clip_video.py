@@ -200,10 +200,17 @@ def get_mp4_files(folder: str) -> list:
     """フォルダ内のMP4ファイル一覧を取得（サブフォルダは除外）"""
     mp4_files = []
     for file in os.listdir(folder):
-        if file.lower().endswith('.mp4'):
-            full_path = os.path.join(folder, file)
-            if os.path.isfile(full_path):
-                mp4_files.append(full_path)
+        # macOS の AppleDouble 生成ファイル（._xxxx）や隠しファイルは除外
+        if file.startswith('._') or file.startswith('.'):
+            continue
+        if not file.lower().endswith('.mp4'):
+            continue
+        full_path = os.path.join(folder, file)
+        if os.path.isfile(full_path):
+            mp4_files.append(full_path)
+    
+    # ファイル名順にソート
+    mp4_files.sort()
     return sorted(mp4_files)
 
 
