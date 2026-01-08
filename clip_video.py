@@ -7,11 +7,10 @@
 
 import os
 import sys
-import glob
 import shutil
 import subprocess
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 import cv2
 import numpy as np
 from tqdm import tqdm
@@ -74,6 +73,51 @@ class RegionSelector:
             return None
 
         return (x, y, width, height)
+    
+    def _evenize_roi(region: tuple) -> tuple:
+        """
+        ROIを偶数境界に丸める。
+        libx264 + yuv420p等では　width/height　が偶数でないと失敗するケースがあるため保険。
+        可能なら　x,y も偶数化してフィルタ側の制約を回避しやすくなる
+        """
+
+        x, y, w, h =region
+        # x,y を偶数へ（下方向へ丸め）
+        x = x - (x % 2)
+        y = y - (y % 2)
+        # w,h を偶数へ（下方向へ丸め）
+        w = w - (w % 2)
+        h = h - (h % 2)
+        if w <= 0 or h <= 0:
+            return None
+        return (x, y, w, h)
+    
+    def _clamp_roi_to_frame(region: tuple, frame_w: int, frame_h: int) -> tuple:
+        """
+        ROIがフレーム外にはmに出さないようにclampする
+        """
+        x, y, w, h =region
+        # 左上をclamp
+        x = max(0, min(x, frame_w - 1))
+        y = max(0, min(y, frame_h - 1))
+        # 右下が範囲内になるように幅高さを調整
+        w = min(w, frame_w - x)
+        h = min(h, frame_h - y)
+        if w <= 0 or h <= 0:
+            return None
+        return (x, y, w, h)
+    
+    def get_video_size(video_path: str) -> tuple:
+        """動画のフレームサイズ（width, height）を取得"""
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RuntimeError(f"動画ファイルを開けませんでした: {video_path}")
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        if w <= 0 or h <= 0:
+            raise RuntimeError(f"動画サイズを取得できませんでした: {video_path}")
+        return (w, h)
 
     def select(self) -> tuple:
         """
@@ -136,10 +180,15 @@ def get_middle_frame(video_path: str) -> np.ndarray:
         raise RuntimeError(f"動画ファイルを開けませんでした: {video_path}")
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    middle_frame_idx = total_frames // 2
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_idx)
-    ret, frame = cap.read()
+    # CAP_PROP_FEAME_COUNT　が取れないケースに備えてフォールバック
+    if total_frames and total_frames > 0:
+        middle_frame_idx = total_frames // 2
+        cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_idx)
+        ret, frame = cap.read()
+    else:
+        #　先頭フレームで代替
+        cap.set(cv2.CAP_PROP_POS_FRAM,0)
+        ret, frame = cap.read()    
     cap.release()
 
     if not ret:
@@ -188,15 +237,17 @@ def clip_video_ffmpeg(input_path: str, output_path: str, region: tuple) -> bool:
     ]
 
     try:
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        return result.returncode == 0
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            # ffmpegのstderrを出して原因特定しやすくする
+            tqdm.write(f"[ffmepeg error] {os.path.basename(input_path)} -> {os.path.basename(output_path)}")
+            if result.stderr:
+                #　長すぎる場合もあるのでそのまま出す（個人用途前提）
+                tqdm.write(result.stderr.strip())
+                return False
+            return True
     except Exception as e:
-        print(f"エラー: {e}")
+        tqdm.write(f"エラー: {e}")
         return False
 
 
@@ -320,6 +371,22 @@ def main():
         sys.exit(1)
     print(f"\n{len(mp4_files)}個のMP4ファイルが見つかりました。")
 
+    # 解像度混在チェック（ROIの使い回しが前提のため）
+    try:
+        sizes = [get_video_size(p) for p in mp4_files]
+    except RuntimeError as e:
+        print(f"エラー: {e}")
+        sys.exit(1)
+
+    uniq_size = sorted(set(sizes))
+    if len(uniq_size) != 1:
+        print("¥nエラー: 入力フォルダ内に解像度の異なる動画が混在しています")
+        print("ROIを全ファイルに適用する設計のため、混在状態では安全に処理できません")
+        print("検出された解像度一覧:")
+        for (w, h) in uniq_sizes:
+            print(f"  -{w} x {h}")
+        sys.exit(1)
+
     # 最初のファイルの中間フレームを取得
     first_file = mp4_files[0]
     print(f"\n参照ファイル: {os.path.basename(first_file)}")
@@ -339,8 +406,19 @@ def main():
         print("範囲選択がキャンセルされました。終了します。")
         sys.exit(0)
 
+    frame_h, frame_w = frame.shape[0], frame.shape[1]
+    # ROI をフレーム内にclampし、偶数境界に丸める
+    region = _clamp_roi_to_frame(region, frame_w=frame_w, frame_h=frame_h)
+    if region is None:
+        print("エラー: ROIが無効です（フレーム外、またはサイズ0）。終了します。")
+        sys.exit(1)
+    region = _evenize_roi(region)
+    if region is None:
+        print("エラー: ROIが偶数丸めにより無効になりました（サイズ0）。終了します。")
+        sys.exit(1)
+
     x, y, width, height = region
-    print(f"\n選択された範囲: x={x}, y={y}, width={width}, height={height}")
+    print(f"\n選択された範囲（補正後）: x={x}, y={y}, width={width}, height={height}")
 
     # 一括処理
     print(f"\n{'=' * 50}")
