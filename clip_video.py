@@ -244,14 +244,15 @@ def clip_video_ffmpeg(input_path: str, output_path: str, region: tuple) -> bool:
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            # ffmpegのstderrを出して原因特定しやすくする
-            tqdm.write(f"[ffmepeg error] {os.path.basename(input_path)} -> {os.path.basename(output_path)}")
-            if result.stderr:
-                #　長すぎる場合もあるのでそのまま出す（個人用途前提）
-                tqdm.write(result.stderr.strip())
-                return False
+        if result.returncode == 0:
             return True
+
+        # 失敗時：stderr を出して原因特定しやすくする
+        tqdm.write(f"[ffmpeg error] {os.path.basename(input_path)} -> {os.path.basename(output_path)}")
+        if result.stderr:
+            # 長すぎる場合もあるのでそのまま出す（個人用途前提）
+            tqdm.write(result.stderr.strip())
+        return False
     except Exception as e:
         tqdm.write(f"エラー: {e}")
         return False
