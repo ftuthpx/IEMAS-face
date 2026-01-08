@@ -20,6 +20,50 @@ def check_ffmpeg() -> bool:
     """ffmpegがインストールされているか確認"""
     return shutil.which('ffmpeg') is not None
 
+def _evenize_roi(region: tuple) -> tuple:
+        """
+        ROIを偶数境界に丸める。
+        libx264 + yuv420p等では　width/height　が偶数でないと失敗するケースがあるため保険。
+        可能なら　x,y も偶数化してフィルタ側の制約を回避しやすくなる
+        """
+
+        x, y, w, h =region
+        # x,y を偶数へ（下方向へ丸め）
+        x = x - (x % 2)
+        y = y - (y % 2)
+        # w,h を偶数へ（下方向へ丸め）
+        w = w - (w % 2)
+        h = h - (h % 2)
+        if w <= 0 or h <= 0:
+            return None
+        return (x, y, w, h)
+    
+def _clamp_roi_to_frame(region: tuple, frame_w: int, frame_h: int) -> tuple:
+        """
+        ROIがフレーム外にはmに出さないようにclampする
+        """
+        x, y, w, h =region
+        # 左上をclamp
+        x = max(0, min(x, frame_w - 1))
+        y = max(0, min(y, frame_h - 1))
+        # 右下が範囲内になるように幅高さを調整
+        w = min(w, frame_w - x)
+        h = min(h, frame_h - y)
+        if w <= 0 or h <= 0:
+            return None
+        return (x, y, w, h)
+    
+def get_video_size(video_path: str) -> tuple:
+        """動画のフレームサイズ（width, height）を取得"""
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise RuntimeError(f"動画ファイルを開けませんでした: {video_path}")
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        if w <= 0 or h <= 0:
+            raise RuntimeError(f"動画サイズを取得できませんでした: {video_path}")
+        return (w, h)
 
 class RegionSelector:
     """マウスドラッグで矩形範囲を選択するクラス"""
@@ -73,51 +117,6 @@ class RegionSelector:
             return None
 
         return (x, y, width, height)
-    
-    def _evenize_roi(region: tuple) -> tuple:
-        """
-        ROIを偶数境界に丸める。
-        libx264 + yuv420p等では　width/height　が偶数でないと失敗するケースがあるため保険。
-        可能なら　x,y も偶数化してフィルタ側の制約を回避しやすくなる
-        """
-
-        x, y, w, h =region
-        # x,y を偶数へ（下方向へ丸め）
-        x = x - (x % 2)
-        y = y - (y % 2)
-        # w,h を偶数へ（下方向へ丸め）
-        w = w - (w % 2)
-        h = h - (h % 2)
-        if w <= 0 or h <= 0:
-            return None
-        return (x, y, w, h)
-    
-    def _clamp_roi_to_frame(region: tuple, frame_w: int, frame_h: int) -> tuple:
-        """
-        ROIがフレーム外にはmに出さないようにclampする
-        """
-        x, y, w, h =region
-        # 左上をclamp
-        x = max(0, min(x, frame_w - 1))
-        y = max(0, min(y, frame_h - 1))
-        # 右下が範囲内になるように幅高さを調整
-        w = min(w, frame_w - x)
-        h = min(h, frame_h - y)
-        if w <= 0 or h <= 0:
-            return None
-        return (x, y, w, h)
-    
-    def get_video_size(video_path: str) -> tuple:
-        """動画のフレームサイズ（width, height）を取得"""
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise RuntimeError(f"動画ファイルを開けませんでした: {video_path}")
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        cap.release()
-        if w <= 0 or h <= 0:
-            raise RuntimeError(f"動画サイズを取得できませんでした: {video_path}")
-        return (w, h)
 
     def select(self) -> tuple:
         """
